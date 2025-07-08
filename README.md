@@ -2,6 +2,23 @@
 
 A simple tool to recover Git repositories from exposed `.git` folders on remote servers.
 
+## Quick Start
+
+1.  **Download the script:**
+    ```bash
+    curl -O https://raw.githubusercontent.com/denny0223/scrabble/refs/heads/master/scrabble
+    ```
+
+2.  **Make it executable:**
+    ```bash
+    chmod +x scrabble
+    ```
+
+3.  **Run the script:**
+    ```bash
+    ./scrabble <url> [directory]
+    ```
+
 ## Usage
 
 `scrabble <url> [directory]`
