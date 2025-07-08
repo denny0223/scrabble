@@ -18,12 +18,15 @@ set -o errexit -o nounset -o pipefail
 
 # Prints usage information and exits.
 usage() {
-    echo "Missing target URL" >&2
+    echo "Usage: scrabble <url> [directory]" >&2
     echo "" >&2
-    echo "Usage: scrabble <url>" >&2
-    echo "Example: scrabble http://example.com/" >&2
+    echo "Arguments:" >&2
+    echo "  url        The full URL to the repository's .git directory." >&2
+    echo "  directory  (Optional) The directory to clone into." >&2
+    echo "             If not provided, it defaults to the repository name from the URL." >&2
     echo "" >&2
-    echo "You need to make sure the target URL has an exposed .git folder." >&2
+    echo "Example: scrabble http://example.com/my-project.git/" >&2
+    echo "         scrabble http://example.com/my-project.git/ my-new-folder" >&2
     exit 1
 }
 
@@ -119,6 +122,26 @@ main() {
         domain+="/"
     fi
 
+    # Determine the output directory.
+    local output_dir
+    if [[ -n "${2:-}" ]]; then
+        output_dir="$2"
+    else
+        # Default to the basename of the URL, removing .git if present.
+        output_dir=$(basename "${domain}" .git)
+    fi
+
+    # Security check: ensure the target directory does not exist.
+    if [[ -e "$output_dir" ]]; then
+        echo "Error: Target directory '${output_dir}' already exists." >&2
+        echo "Please remove it or choose a different directory." >&2
+        exit 1
+    fi
+
+    echo "Creating target directory: ${output_dir}"
+    mkdir -p "$output_dir"
+    cd "$output_dir"
+
     echo "Initializing local repository..."
     git init -q
 
@@ -160,7 +183,7 @@ main() {
     # Reset the working directory to the state of the downloaded commit.
     echo "Resetting repository to the downloaded state..."
     git reset --hard
-    echo "Done."
+    echo "Done. Repository downloaded to '${output_dir}'"
 }
 
 # Execute the main function with all script arguments
