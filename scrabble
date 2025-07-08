@@ -1,66 +1,167 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Author: Denny Huang <denny0223@gmail.com>
 # Wed Sep 17 2014
 # MIT License
+#
+# Description:
+# A script to recursively download git objects from a web server
+# that has an exposed .git directory. It reconstructs the git history locally.
 
-function downloadBlob {
-	echo downloadBlob $1
+# Exit immediately if a command exits with a non-zero status.
+# Treat unset variables as an error when substituting.
+# Pipelines return the exit status of the last command to exit with a
+# non-zero status, or zero if no command exited with a non-zero status.
+set -o errexit -o nounset -o pipefail
 
-	mkdir -p ${1:0:2}
-	cd $_
+# --- Functions ---
 
-	wget -q -nc $domain/.git/objects/${1:0:2}/${1:2}
-
-	cd ..
+# Prints usage information and exits.
+usage() {
+    echo "Missing target URL" >&2
+    echo "" >&2
+    echo "Usage: scrabble <url>" >&2
+    echo "Example: scrabble http://example.com/" >&2
+    echo "" >&2
+    echo "You need to make sure the target URL has an exposed .git folder." >&2
+    exit 1
 }
 
-function parseTree {
-	echo parseTree $1
+# Downloads a git object blob from the remote server.
+# Arguments:
+#   $1: The object hash.
+#   $2: The domain URL.
+downloadBlob() {
+    local hash="$1"
+    local domain="$2"
+    local dir="${hash:0:2}"
+    local file="${hash:2}"
 
-	downloadBlob $1
+    echo "Downloading blob: ${hash}"
 
-	while read line
-	do
-		type=$(echo $line | awk '{print $2}')
-		hash=$(echo $line | awk '{print $3}')
-
-		[ "$type" = "tree" ] && parseTree $hash || downloadBlob $hash
-	done < <(git cat-file -p $1)
+    mkdir -p "$dir"
+    # Using a subshell for cd is safer as it doesn't change the CWD of the script.
+    (
+        cd "$dir"
+        wget -q -nc "${domain}/.git/objects/${dir}/${file}"
+    )
 }
 
-function parseCommit {
-	echo parseCommit $1
+# Recursively parses a git tree object.
+# Arguments:
+#   $1: The tree hash.
+#   $2: The domain URL.
+parseTree() {
+    local tree_hash="$1"
+    local domain="$2"
 
-	downloadBlob $1
+    echo "Parsing tree: ${tree_hash}"
 
-	tree=$(git cat-file -p $1| sed -n '1p' | awk '{print $2}')
-	parseTree $tree
+    downloadBlob "$tree_hash" "$domain"
 
-	parent=$(git cat-file -p $1 | sed -n '2p' | awk '{print $2}')
-
-	[ ${#parent} -eq 40 ] && parseCommit $parent
+    # Use process substitution and a while-read loop to parse the tree entries.
+    # This is more efficient than multiple awk/sed calls.
+    while read -r _ type hash _; do
+        if [[ "$type" == "tree" ]]; then
+            parseTree "$hash" "$domain"
+        elif [[ "$type" == "blob" ]]; then
+            downloadBlob "$hash" "$domain"
+        fi
+    done < <(git cat-file -p "$tree_hash")
 }
 
-[ -z $1 ] && echo -e "missing target url\n\n\
-Usage: scrabble <url>\n\
-Example: scrabble http://example.com/\n\n\
-You need make sure target url had .git folder"\
-&& exit
+# Recursively parses a git commit object.
+# Arguments:
+#   $1: The commit hash.
+#   $2: The domain URL.
+parseCommit() {
+    local commit_hash="$1"
+    local domain="$2"
 
-domain=$1
-ref=$(curl -s $domain/.git/HEAD | awk '{print $2}')
+    echo "Parsing commit: ${commit_hash}"
 
-lastHash=$(curl -s $domain/.git/$ref)
+    downloadBlob "$commit_hash" "$domain"
 
-git init
+    # Extract tree and parent hashes more robustly.
+    local tree
+    tree=$(git cat-file -p "$commit_hash" | awk '/^tree/ {print $2}')
+    parseTree "$tree" "$domain"
 
-cd .git/objects/
+    # A commit can have multiple parents (merge commits), but this script
+    # only follows the first one.
+    local parent
+    parent=$(git cat-file -p "$commit_hash" | awk '/^parent/ {print $2}' | head -n 1)
 
-parseCommit $lastHash
+    if [[ -n "$parent" && "${#parent}" -eq 40 ]]; then
+        parseCommit "$parent" "$domain"
+    fi
+}
 
-cd ../../
+# --- Main Logic ---
 
-echo $lastHash > .git/refs/heads/master
+main() {
+    # Check for required tools
+    for cmd in git curl wget; do
+        if ! command -v "$cmd" &> /dev/null; then
+            echo "Error: Required command '$cmd' not found." >&2
+            exit 1
+        fi
+    done
 
-git reset --hard
+    # Check for URL argument
+    if [[ $# -eq 0 ]]; then
+        usage
+    fi
+
+    local domain="$1"
+    # Ensure domain ends with a slash
+    if [[ "${domain: -1}" != "/" ]]; then
+        domain+="/"
+    fi
+
+    echo "Initializing local repository..."
+    git init -q
+
+    # Fetch HEAD to find the current branch reference
+    echo "Fetching remote HEAD..."
+    local ref
+    ref=$(curl -s "${domain}.git/HEAD" | awk '{print $2}')
+    if [[ -z "$ref" ]]; then
+        echo "Error: Could not determine remote HEAD reference." >&2
+        echo "Is the .git directory accessible at ${domain}.git/ ?" >&2
+        exit 1
+    fi
+
+    # Fetch the commit hash from the reference
+    echo "Fetching commit hash for ref: $ref..."
+    local lastHash
+    lastHash=$(curl -s "${domain}.git/${ref}")
+    if ! [[ "$lastHash" =~ ^[0-9a-f]{40}$ ]]; then
+        echo "Error: Could not get a valid commit hash from ${domain}.git/${ref}" >&2
+        exit 1
+    fi
+
+    echo "Starting download with initial commit: $lastHash"
+
+    # Change to objects directory to download files.
+    # Using a subshell is safer as it doesn't change the CWD of the main script.
+    (
+        cd .git/objects/
+        parseCommit "$lastHash" "$domain"
+    )
+
+    echo "Download complete."
+
+    # Set the local branch to point to the downloaded commit.
+    # This uses the ref name from the remote.
+    echo "Updating ref '${ref}' to point to ${lastHash}"
+    echo "$lastHash" > ".git/${ref}"
+
+    # Reset the working directory to the state of the downloaded commit.
+    echo "Resetting repository to the downloaded state..."
+    git reset --hard
+    echo "Done."
+}
+
+# Execute the main function with all script arguments
+main "$@"
