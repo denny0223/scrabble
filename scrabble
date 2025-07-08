@@ -180,6 +180,10 @@ main() {
     echo "Updating ref '${ref}' to point to ${lastHash}"
     echo "$lastHash" > ".git/${ref}"
 
+    # Point HEAD to the just-created ref to make it the current branch.
+    echo "Setting HEAD to point to '${ref}'"
+    git symbolic-ref HEAD "${ref}"
+
     # Reset the working directory to the state of the downloaded commit.
     echo "Resetting repository to the downloaded state..."
     git reset --hard
