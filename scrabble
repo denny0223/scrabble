@@ -90,14 +90,15 @@ parseCommit() {
     tree=$(git cat-file -p "$commit_hash" | awk '/^tree/ {print $2}')
     parseTree "$tree" "$domain"
 
-    # A commit can have multiple parents (merge commits), but this script
-    # only follows the first one.
-    local parent
-    parent=$(git cat-file -p "$commit_hash" | awk '/^parent/ {print $2}' | head -n 1)
-
-    if [[ -n "$parent" && "${#parent}" -eq 40 ]]; then
-        parseCommit "$parent" "$domain"
-    fi
+    # A commit can have multiple parents (merge commits). We must parse all of them.
+    git cat-file -p "$commit_hash" | awk '/^parent/ {print $2}' | while read -r parent; do
+        if [[ -n "$parent" && "${#parent}" -eq 40 ]]; then
+            # To avoid infinite loops on repositories with circular references (which are possible),
+            # we can add a check here to not re-parse a commit.
+            # For now, we assume a clean history.
+            parseCommit "$parent" "$domain"
+        fi
+    done
 }
 
 # --- Main Logic ---
